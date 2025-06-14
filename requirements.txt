@@ -1,5 +1,10 @@
-llama-index
-openai
-faiss-cpu
-pandas
-python-dotenv
+llama-index==0.12.42
+llama-index-core==0.12.42
+llama-index-llms-openai==0.4.5
+llama-index-embeddings-openai==0.3.1
+
+openai>=1.81.0,<2.0
+faiss-cpu==1.11.0
+
+pandas==2.2.3
+python-dotenv==1.1.0
