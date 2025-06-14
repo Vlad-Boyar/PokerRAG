@@ -4,10 +4,11 @@ from dotenv import load_dotenv
 from telegram import Update
 from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, MessageHandler, filters
 
-from llama_index.core import Settings, Document
+from llama_index.core import Document, Settings
 from llama_index.retrievers.bm25 import BM25Retriever
-from llama_index.postprocessor import SentenceTransformerRerank
+from llama_index.postprocessor.sentence_transformer_rerank.sentence_transformer_rerank import SentenceTransformerRerank
 from llama_index.llms.openai import OpenAI
+from llama_index.embeddings.openai import OpenAIEmbedding
 
 import asyncio
 
@@ -16,8 +17,9 @@ load_dotenv()
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
-# Настройки LLM
+# Настройки LLM + эмбеддер
 Settings.llm = OpenAI(model="gpt-3.5-turbo", api_key=OPENAI_API_KEY)
+Settings.embed_model = OpenAIEmbedding(api_key=OPENAI_API_KEY)
 
 # Загрузка базы
 def load_documents_from_csv(csv_path="faq.csv"):
@@ -26,13 +28,11 @@ def load_documents_from_csv(csv_path="faq.csv"):
 
 documents = load_documents_from_csv()
 
-# BM25 Retriever
+# BM25 + reranker
 retriever = BM25Retriever.from_defaults(documents)
+reranker = SentenceTransformerRerank(model="BAAI/bge-reranker-base", top_n=1)
 
-# Реранкер на базе BAAI/bge-reranker-base
-reranker = SentenceTransformerRerank(top_n=1, model="BAAI/bge-reranker-base")
-
-# Ответ пользователю
+# Обработка запроса
 async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
     question = update.message.text
     print(f"[RAG] Вопрос от пользователя: {question}")
@@ -40,14 +40,18 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
     nodes = retriever.retrieve(question)
     reranked_nodes = reranker.postprocess_nodes(nodes, query=question)
 
-    answer = reranked_nodes[0].get_content() if reranked_nodes else "Не нашёл подходящего ответа."
-    await update.message.reply_text(answer)
+    if reranked_nodes:
+        response = reranked_nodes[0].get_content()
+    else:
+        response = "Извините, я не нашёл подходящего ответа."
+
+    await update.message.reply_text(response)
 
 # /start
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Привет! Я бот-помощник. Спроси что-нибудь — и я найду ответ!")
 
-# Главный run
+# Запуск Telegram‑бота
 async def main():
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
