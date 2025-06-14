@@ -5,7 +5,7 @@ __pycache__/
 *.pyd
 
 # vanv
-vanv/
+venv/
 
 # Env files
 .env
