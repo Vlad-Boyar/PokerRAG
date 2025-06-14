@@ -1,10 +1,6 @@
-llama-index==0.12.42
-llama-index-core==0.12.42
-llama-index-llms-openai==0.4.5
-llama-index-embeddings-openai==0.3.1
-
-openai>=1.81.0,<2.0
-faiss-cpu==1.11.0
-
-pandas==2.2.3
-python-dotenv==1.1.0
+openai==1.16.0
+llama-index==0.10.20
+sentence-transformers==2.7.0
+python-dotenv
+pandas
+python-telegram-bot==20.6
