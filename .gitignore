@@ -4,8 +4,11 @@ __pycache__/
 *.pyo
 *.pyd
 
+# vanv
+vanv/
+
 # Env files
-venv/
+.env
 
 # System files 
 Thumbs.db
