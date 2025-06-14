@@ -1,0 +1,5 @@
+llama-index
+openai
+faiss-cpu
+pandas
+python-dotenv
