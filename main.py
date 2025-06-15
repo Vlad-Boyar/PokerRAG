@@ -1,108 +1,85 @@
 import os
-import torch
 import logging
-import pandas as pd
-from dotenv import load_dotenv
-from telegram import Update
-from telegram.ext import (
-    ApplicationBuilder, CommandHandler, MessageHandler,
-    ContextTypes, filters
-)
-from llama_index.core import VectorStoreIndex, Settings, Document
+from llama_index.core import SimpleDirectoryReader, VectorStoreIndex
+from llama_index.core import Settings
 from llama_index.llms.openai import OpenAI
-from llama_index.embeddings.huggingface import HuggingFaceEmbedding
+from llama_index.retrievers.bm25 import BM25Retriever
 from llama_index.core.postprocessor import SentenceTransformerRerank
+from llama_index.embeddings.huggingface import HuggingFaceEmbedding
+from sentence_transformers import SentenceTransformer
+from dotenv import load_dotenv
 from deep_translator import GoogleTranslator
+from fastapi import FastAPI, Request
+from pydantic import BaseModel
+import uvicorn
+import langdetect
 
-RELEVANCE_THRESHOLD = 0.78
-
-# Logging
+# ========== Настройка ==========
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
-# Load .env
 load_dotenv()
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-OPENAI_KEY = os.getenv("OPENAI_API_KEY")
-HF_TOKEN = os.getenv("HUGGINGFACE_API_TOKEN")
 
-# LLM and embeddings
-Settings.llm = OpenAI(model="gpt-3.5-turbo", api_key=OPENAI_KEY)
-Settings.embed_model = HuggingFaceEmbedding(
-    model_name="intfloat/multilingual-e5-base",
-    query_instruction="query:",
-    text_instruction="passage:",
-    device="cuda" if torch.cuda.is_available() else "cpu",
-    token=HF_TOKEN
-)
+EMBED_MODEL_NAME = "intfloat/multilingual-e5-base"
+RERANK_MODEL_NAME = "cross-encoder/ms-marco-MiniLM-L-6-v2"
 
-# Load FAQ
-def load_faq(csv_path="faq.csv"):
-    df = pd.read_csv(csv_path)
-    return [Document(text=f"Q: {row['question']}\nA: {row['answer']}") for _, row in df.iterrows()]
+# ========== Классы ==========
+class Query(BaseModel):
+    query: str
 
-documents = load_faq()
-index = VectorStoreIndex.from_documents(documents)
+# ========== Загрузка данных ==========
+documents = SimpleDirectoryReader("data").load_data()
+index = VectorStoreIndex.from_documents(documents, embed_model=HuggingFaceEmbedding(model_name=EMBED_MODEL_NAME))
+retriever = BM25Retriever.from_defaults(index=index, similarity_top_k=5)
+reranker = SentenceTransformerRerank(model=SentenceTransformer(RERANK_MODEL_NAME), top_n=3)
 
-# Retriever + Reranker
-retriever = index.as_retriever(similarity_top_k=5)
-reranker = SentenceTransformerRerank(
-    model="sentence-transformers/paraphrase-MiniLM-L6-v2",
-    top_n=3
-)
-retriever.postprocessors = [reranker]
-
-# Handlers
-async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.message.text
-    logger.info(f"User query: {query}")
-
-    # Перевод на английский
+# ========== Перевод ==========
+def detect_lang(text):
     try:
-        query_en = GoogleTranslator(source='auto', target='en').translate(query)
-        logger.info(f"Translated query: {query_en}")
-    except Exception as e:
-        logger.warning(f"❌ Translation failed: {e}")
-        query_en = query  # fallback на оригинал
+        return langdetect.detect(text)
+    except:
+        return "en"
 
-    # Поиск по переведённому запросу
+def translate(text, source, target):
+    if source == target:
+        return text
+    try:
+        return GoogleTranslator(source=source, target=target).translate(text)
+    except:
+        return text
+
+# ========== Ответ ==========
+def answer_query(user_query: str):
+    user_lang = detect_lang(user_query)
+    logger.info(f"[User] {user_query} ({user_lang})")
+
+    query_en = translate(user_query, user_lang, "en")
     nodes = retriever.retrieve(query_en)
-    if not nodes:
-        await update.message.reply_text("❌ Sorry, I couldn't find an answer.\nPlease try rephrasing your question.")
-        return
+    reranked = reranker.postprocess_nodes(nodes, query_str=query_en)
 
-    best_node = nodes[0]
-    is_relevant = best_node.score and best_node.score >= RELEVANCE_THRESHOLD
+    top_node = reranked[0] if reranked else None
+    top_score = top_node.score if top_node else 0
+    logger.info(f"Top score: {top_score:.4f}")
 
-    # Блок похожих вопросов
-    similar = "\n\n🔍 Top reranked matches:\n"
-    for i, node in enumerate(nodes[:3]):
-        q = node.get_content().split("\n")[0].replace("Q: ", "").strip()
-        score = node.score if node.score else 0
-        similar += f"{i+1}. {q} — 📊 {score:.4f}\n"
+    if top_node and top_score > 0.78:
+        q, a = top_node.node.metadata.get("question"), top_node.node.metadata.get("answer")
+        translated_answer = translate(f"Q: {q}\nA: {a}", source="en", target=user_lang)
+        return translated_answer
+    
+    # иначе просто похожие вопросы
+    top_questions = [n.node.metadata.get("question") for n in reranked]
+    translated_qs = [translate(q, source="en", target=user_lang) for q in top_questions]
+    alt_suggestions = "\n".join(f"\u2022 {q}" for q in translated_qs)
+    fallback_msg = translate("❌ Nothing found. Maybe you meant:", source="en", target=user_lang)
+    return f"{fallback_msg}\n{alt_suggestions}"
 
-    # Финальный ответ
-    if is_relevant:
-        context_str = best_node.get_content()
-        prompt = f"Context:\n{context_str}\n\nQuestion: {query_en}\nAnswer:"
-        response = Settings.llm.complete(prompt).text.strip()
-        final_reply = f"{response}{similar}"
-    else:
-        final_reply = f"🤷 Sorry, I couldn't find a confident answer.\nPlease try rephrasing your question.{similar}"
+# ========== API ==========
+app = FastAPI()
 
-    await update.message.reply_text(final_reply)
+@app.post("/query")
+async def query_route(req: Query):
+    reply = answer_query(req.query)
+    return {"answer": reply}
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Hi! Ask me anything about poker coaching.")
-
-# Main startup
-def main():
-    app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle))
-
-    logger.info("🤖 Bot is running and ready.")
-    app.run_polling()
-
+# ========== Run ==========
 if __name__ == "__main__":
-    main()
+    uvicorn.run(app, host="127.0.0.1", port=8000)
