@@ -12,6 +12,8 @@ from llama_index.llms.openai import OpenAI
 from llama_index.embeddings.huggingface import HuggingFaceEmbedding
 import asyncio
 
+RELEVANCE_THRESHOLD = 0.78
+
 # Logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -42,22 +44,33 @@ retriever = index.as_retriever(similarity_top_k=5)
 async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.message.text
     logger.info(f"User: {query}")
-    nodes = retriever.retrieve(query)
 
-    if not nodes or nodes[0].score < 0.5:
-        await update.message.reply_text("❌ I couldn't find a confident answer.")
+    nodes = retriever.retrieve(query)
+    if not nodes:
+        await update.message.reply_text("❌ Sorry, I couldn't find an answer.\nPlease try rephrasing your question.")
         return
 
-    context_str = nodes[0].get_content()
-    prompt = f"Context:\n{context_str}\n\nQuestion: {query}\nAnswer:"
-    response = Settings.llm.complete(prompt).text.strip()
+    # Подбор релевантных узлов
+    best_node = nodes[0]
+    is_relevant = best_node.score and best_node.score >= RELEVANCE_THRESHOLD
 
+    # Формируем блок похожих вопросов
     similar = "\n\n🔍 Related questions:\n"
     for i, node in enumerate(nodes[:3]):
         q = node.get_content().split("\n")[0].replace("Q: ", "").strip()
-        similar += f"{i+1}. {q} — 📊 {node.score:.2f}\n"
+        score = node.score if node.score else 0
+        similar += f"{i+1}. {q} — 📊 {score:.2f}\n"
 
-    await update.message.reply_text(f"{response}{similar}")
+    # Формируем финальный ответ
+    if is_relevant:
+        context_str = best_node.get_content()
+        prompt = f"Context:\n{context_str}\n\nQuestion: {query}\nAnswer:"
+        response = Settings.llm.complete(prompt).text.strip()
+        final_reply = f"{response}{similar}"
+    else:
+        final_reply = f"🤷 Sorry, I couldn't find a confident answer.\nPlease try rephrasing your question.{similar}"
+
+    await update.message.reply_text(final_reply)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Hi! Ask me anything about poker coaching.")
