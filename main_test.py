@@ -1,33 +1,25 @@
-import os
-import asyncio
-from dotenv import load_dotenv
-from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
+import pandas as pd
+from sentence_transformers import SentenceTransformer, util
 
-load_dotenv()
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+# Загружаем модель
+model = SentenceTransformer("intfloat/multilingual-e5-base")
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("✅ Бот работает!")
+# Загружаем CSV
+df = pd.read_csv("data/faq.csv")
 
-async def main():
-    print("🟢 Запуск Telegram бота...")
+# Твой запрос
+query_text = "пися попа"
+query_embed = model.encode("query: " + query_text, convert_to_tensor=True)
 
-    app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
+print(f"Q: {query_text}\n")
 
-    await app.initialize()
-    await app.start()
-    print("🤖 Бот запущен и слушает /start")
+# Перебираем базу
+for _, row in df.iterrows():
+    text = f"passage: Q: {row['question']}\nA: {row['answer']}"
+    doc_embed = model.encode(text, convert_to_tensor=True)
 
-    # Бесконечно ждем, пока бот работает
-    await asyncio.Event().wait()
+    score = util.cos_sim(query_embed, doc_embed).item()
 
-if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except RuntimeError as e:
-        # fallback для уже запущенного event loop (например, в VS Code)
-        print("⚠️ Event loop уже активен, fallback...")
-        loop = asyncio.get_event_loop()
-        loop.create_task(main())
+    print(f"A: {row['answer']}")
+    print(f"score = {score:.4f}")
+    print("-" * 40)
