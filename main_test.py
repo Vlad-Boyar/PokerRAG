@@ -5,7 +5,7 @@ from sentence_transformers import SentenceTransformer, util
 model = SentenceTransformer("intfloat/multilingual-e5-base")
 
 # Загружаем CSV
-df = pd.read_csv("data/faq.csv")
+df = pd.read_csv("faq.csv")
 
 # Твой запрос
 query_text = "пися попа"
