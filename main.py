@@ -1,5 +1,3 @@
-<<<<<<< HEAD
-=======
 import os
 import logging
 import pandas as pd
@@ -88,4 +86,3 @@ def main():
 
 if __name__ == "__main__":
     main()
->>>>>>> parent of dd33846 (RAG + GPT + reranker)
